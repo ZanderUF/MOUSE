@@ -29,12 +29,19 @@ from core_design.utils import (
     calculate_total_number_of_TRISO_particles,
 )
 from core_design.drums import (
-    calculate_drums_volumes_and_masses,
     calculate_reflector_mass_LTMR,
     calculate_reflector_mass_GCMR,
     calculate_moderator_mass_GCMR,
     calculate_reflector_and_moderator_mass_HPMR,
     calculate_moderator_mass, # used by LTMR
+)
+# Capability-aware reactivity-control sizing (drums for LTMR/GCMR/HPMR; routes
+# to control rods for rod-controlled concepts without changing this call site).
+from core_design.control_elements import resolve_control_element
+from core_design.reactor_registry import (
+    is_registered,
+    get_capabilities,
+    implemented_reactor_types,
 )
 from core_design.pins_arrangement import LTMR_pins_arrangement
 from core_design.openmc_template_LTMR import update_ltmr_reflector_geometry_from_drums
@@ -208,7 +215,7 @@ def _build_ltmr(params):
         'Drum Absorber Arc Degrees': 120,
     })
     update_ltmr_reflector_geometry_from_drums(params)
-    calculate_drums_volumes_and_masses(params)
+    resolve_control_element(params)
     calculate_reflector_mass_LTMR(params)
 
     # Sec 4: Overall system
@@ -497,7 +504,7 @@ def _build_gcmr(params):
     params.update({
         'Drum Absorber Thickness': 1,
     })
-    calculate_drums_volumes_and_masses(params)
+    resolve_control_element(params)
     calculate_reflector_mass_GCMR(params)
     calculate_moderator_mass_GCMR(params)
 
@@ -800,7 +807,7 @@ def _build_hpmr(params):
         'Drum Count': 12, # allowed: 6, 12, 18, 24
         'Drum Absorber Thickness': 1,
     })
-    calculate_drums_volumes_and_masses(params)
+    resolve_control_element(params)
     calculate_reflector_and_moderator_mass_HPMR(params)
 
     # Sec 4: Overall system
@@ -1101,7 +1108,19 @@ def build_params(reactor_type, power_mwt, enrichment, user_overrides,
 
     builders = {'LTMR': _build_ltmr, 'GCMR': _build_gcmr, 'HPMR': _build_hpmr}
     if reactor_type not in builders:
-        raise ValueError(f"Unknown reactor type: {reactor_type!r}. Choose LTMR, GCMR, or HPMR.")
+        implemented = ', '.join(implemented_reactor_types())
+        if is_registered(reactor_type) and not get_capabilities(reactor_type).implemented:
+            # Catalogued in the capability registry but no params builder yet.
+            # This is the wiring point for a new reactor concept: add a
+            # _build_<type> function above and register it in `builders`.
+            raise NotImplementedError(
+                f"{reactor_type!r} is described in the reactor capability "
+                f"registry (core_design/reactor_registry.py) but has no params "
+                f"builder yet. Implemented reactor types: {implemented}."
+            )
+        raise ValueError(
+            f"Unknown reactor type: {reactor_type!r}. Implemented: {implemented}."
+        )
 
     builders[reactor_type](params)
 
