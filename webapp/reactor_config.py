@@ -45,7 +45,11 @@ from core_design.reactor_registry import (
 )
 from core_design.pins_arrangement import LTMR_pins_arrangement
 from core_design.openmc_template_LTMR import update_ltmr_reflector_geometry_from_drums
-from reactor_engineering_evaluation.fuel_calcs import fuel_calculations
+from core_design.openmc_materials_database import collect_materials_data
+from reactor_engineering_evaluation.fuel_calcs import (
+    fuel_calculations,
+    burnup_limited_fuel_lifetime_days,
+)
 from webapp.fuel_lifetime_estimator import estimate_ltmr_fuel_lifetime
 from webapp.gcmr_fuel_lifetime_estimator import estimate_gcmr_fuel_lifetime
 from webapp.hpmr_fuel_lifetime_estimator import (
@@ -56,6 +60,7 @@ from webapp.hpmr_fuel_lifetime_estimator import (
 from reactor_engineering_evaluation.BOP import (
     calculate_heat_exchanger_mass,
     calculate_primary_pump_mechanical_power,
+    calculate_secondary_pump_mechanical_power,
 )
 from reactor_engineering_evaluation.tools import (
     mass_flow_rate,
@@ -1037,6 +1042,243 @@ def _build_hpmr(params):
     # No ITC/PTC credits for HPMR by default
 
 
+def _build_sre(params):
+    """Populate params for an SRE-like reactor (Sodium Reactor Experiment).
+
+    Thermal-spectrum, graphite-moderated, sodium-cooled, metallic-uranium
+    loop-type reactor controlled by control rods (not drums). It is built on the
+    capability-driven abstractions: reactivity control is sized by RodElement
+    (via resolve_control_element, since the SRE registry entry declares control
+    rods) and the vessel system uses the loop architecture (a single primary
+    vessel) via vessels_specs.
+
+    Reference design point (historical SRE, Santa Susana, first criticality
+    1957): ~20 MWt / ~6 MWe, 43 fuel channels x 7 uranium-metal rods = 301 rods,
+    graphite moderator and reflector, sodium primary + intermediate loops
+    driving a steam cycle (Atomics International NAA-SR reports).
+
+    'Active Height' is supplied by build_params; the remaining geometry uses SRE
+    reference values that the user may override via user_overrides.
+
+    Cost mapping note: MOUSE's cost database expresses the reactivity-control
+    system in terms of control drums. The control-ROD system is mapped onto
+    those accounts (Drum Count <- rod count; Control Drum Absorber Mass <- rod
+    absorber mass) so the rods are costed by the existing reactivity-control
+    accounts; the drum-reflector account is intentionally omitted (rods have no
+    reflector). Sodium coolant inventory, primary heat-transport piping, and
+    other-reactor-plant-equipment accounts are currently gated to other reactor
+    types in the cost database and contribute $0 until SRE rows are added there.
+    """
+
+    # Sec 1: Materials
+    params.update({
+        'reactor type': 'SRE',
+        'TRISO Fueled': 'No',
+        'Fuel': 'U_met',
+        'Fuel Density': 19.05,                 # g/cm^3, unalloyed uranium metal
+        'Fuel Uranium Weight Fraction': 1.0,   # metallic U (no diluent)
+        'Coolant': 'Na',
+        'Coolant Density': 850.0,              # kg/m^3, liquid sodium ~450 C
+        'Radial Reflector': 'Graphite',
+        'Axial Reflector': 'Graphite',
+        'Moderator': 'Graphite',
+        'Control Rod Absorber': 'B4C_natural',
+        'Control Rod Clad': 'SS304',
+        'Common Temperature': 700,
+        'HX Material': 'SS316',
+    })
+
+    # Sec 2: Geometry + core material masses
+    params.update({
+        'Number of Fuel Rods': 301,            # 43 fuel channels x 7 rods
+        'Fuel Pin Radii': [0.94, 0.98],        # [fuel meat, clad outer] (cm)
+        'Active Core Radius': 95.0,            # graphite + fuel region radius (cm)
+        'Radial Reflector Thickness': 30.0,
+        'Axial Reflector Thickness': 30.0,
+        'Core Coolant Volume Fraction': 0.15,  # sodium fraction in the core
+    })
+    H = params['Active Height']
+    r_meat, r_clad = params['Fuel Pin Radii'][0], params['Fuel Pin Radii'][1]
+    n_fuel = params['Number of Fuel Rods']
+    params['Core Radius'] = params['Active Core Radius'] + params['Radial Reflector Thickness']
+
+    materials_database = collect_materials_data(params)
+    graphite_density = materials_database['Graphite'].density  # g/cm^3
+
+    # Fuel (heavy-metal) mass from metallic-rod geometry
+    fuel_meat_volume = n_fuel * np.pi * r_meat ** 2 * H        # cm^3
+    total_u_g = fuel_meat_volume * params['Fuel Density'] * params['Fuel Uranium Weight Fraction']
+    params['Mass U235'] = int(round(total_u_g * params['Enrichment']))
+    params['Mass U238'] = int(round(total_u_g * (1.0 - params['Enrichment'])))
+    params['Uranium Mass'] = (params['Mass U235'] + params['Mass U238']) / 1000  # kg
+
+    # Sec 3: Control rods (sized by RodElement via the capability registry)
+    params.update({
+        'Number of Control Rods': 6,           # ~4 control + 2 safety rods
+        'Control Rod Radius': 2.5,             # outer clad radius (cm)
+        'Control Rod Clad Thickness': 0.3,
+        'Control Rod Drive Mass': 50.0,        # kg per rod (drive mechanism)
+    })
+    resolve_control_element(params)            # -> RodElement (registry: SRE uses rods)
+    # Map the rod system onto the cost database's reactivity-control accounts.
+    params['Drum Count'] = params['Number of Control Rods']
+    params['Control Drum Absorber'] = 'B4C_natural'
+    params['Control Drum Absorber Mass'] = params['Control Rod Absorber Mass']
+
+    # Core graphite (moderator) and reflector masses
+    active_core_volume = np.pi * params['Active Core Radius'] ** 2 * H
+    fuel_clad_volume = n_fuel * np.pi * r_clad ** 2 * H
+    coolant_volume = params['Core Coolant Volume Fraction'] * active_core_volume
+    rod_volume = params['Number of Control Rods'] * np.pi * params['Control Rod Radius'] ** 2 * H
+    graphite_core_volume = max(
+        active_core_volume - fuel_clad_volume - coolant_volume - rod_volume, 0.0)
+    params['Moderator Mass'] = graphite_core_volume * graphite_density / 1000  # kg
+
+    radial_reflector_volume = np.pi * (params['Core Radius'] ** 2
+                                       - params['Active Core Radius'] ** 2) * H
+    axial_reflector_volume = 2 * np.pi * params['Core Radius'] ** 2 * params['Axial Reflector Thickness']
+    params['Radial Reflector Mass'] = radial_reflector_volume * graphite_density / 1000  # kg
+    params['Axial Reflector Mass'] = axial_reflector_volume * graphite_density / 1000    # kg
+
+    # Sec 4: Overall system
+    params['Thermal Efficiency'] = 0.30
+    params['Power MWe'] = params['Power MWt'] * params['Thermal Efficiency']
+
+    # Sec 5: Fuel lifetime — burnup-limited (metallic fuel, swelling-limited)
+    params['Target Discharge Burnup MWd/kgHM'] = 3.0
+    fl = int(round(burnup_limited_fuel_lifetime_days(
+        params['Power MWt'], params['Uranium Mass'],
+        params['Target Discharge Burnup MWd/kgHM'])))
+    if fl < _MIN_USEFUL_LIFETIME_DAYS:
+        raise ShortLifetimeError(
+            f"Estimated fuel lifetime is only {fl} days "
+            f"({fl / 30.0:.1f} months) too short for a meaningful design "
+            f"point. Increase the discharge burnup, the fuel loading, or lower "
+            f"the power."
+        )
+    params['Fuel Lifetime'] = fl
+    fuel_calculations(params)
+
+    # Sec 6: Primary + intermediate sodium loops (loop-type heat transport)
+    params.update({
+        'Secondary HX Mass': 0,
+        'Primary Pump': 'Yes',
+        'Secondary Pump': 'Yes',               # intermediate-loop sodium pump
+        'Pump Isentropic Efficiency': 0.8,
+        'Primary Loop Pressure Drop': 300e3,   # Pa, sodium primary loop
+        'Primary Loop Inlet Temperature': 260 + 273.15,
+        'Primary Loop Outlet Temperature': 515 + 273.15,
+        'Secondary Loop Inlet Temperature': 250 + 273.15,
+        'Secondary Loop Outlet Temperature': 480 + 273.15,
+    })
+    params['Primary HX Mass'] = calculate_heat_exchanger_mass(params)
+    mass_flow_rate(params)
+    calculate_primary_pump_mechanical_power(params)
+    # The intermediate loop carries ~the same duty as the primary loop.
+    params['Secondary Pump Mechanical Power'] = calculate_secondary_pump_mechanical_power(
+        params['Primary Loop Mass Flow Rate'])
+    # Single balance-of-plant train (no redundant loops): full electrical output.
+    params['BoP Power kWe'] = 1000 * params['Power MWe']
+
+    # Sec 7: Shielding
+    params.update({
+        'In Vessel Shield Thickness': 10.16,
+        'In Vessel Shield Inner Radius': params['Core Radius'],
+        'In Vessel Shield Material': 'B4C_natural',
+        'Out Of Vessel Shield Thickness': 39.37,
+        'Out Of Vessel Shield Material': 'WEP',
+        'Out Of Vessel Shield Effective Density Factor': 0.5,
+    })
+    params['In Vessel Shield Outer Radius'] = params['Core Radius'] + params['In Vessel Shield Thickness']
+
+    # Sec 8: Vessel (loop architecture -> single primary vessel)
+    params.update({
+        'Vessel Radius': params['Core Radius'] + params['In Vessel Shield Thickness'],
+        'Vessel Thickness': 2.5,               # SRE-class stainless core tank
+        'Vessel Lower Plenum Height': 50,
+        'Vessel Upper Plenum Height': 47.152,
+        'Vessel Upper Gas Gap': 0,
+        'Vessel Bottom Depth': 32.129,
+        'Vessel Material': 'stainless_steel',
+    })
+    vessels_specs(params)                       # loop architecture (from registry)
+    # A loop reactor has no RVACS shells. Those cost accounts (223.21/223.22)
+    # have no optional-variable gate, so set their masses to zero to keep them
+    # at $0 instead of raising a missing-key error in the cost scaler.
+    params['Cooling Vessel Mass'] = 0
+    params['Intake Vessel Mass'] = 0
+    calculate_shielding_masses(params)
+
+    # Sec 9: Operation
+    params.update({
+        'Number of Operators': 2,
+        'Levelization Period': 60,
+        'Refueling Period': 14,
+        'Startup Duration after Refueling': 3,
+        'Reactors Monitored Per Operator': 10,
+        'Security Staff Per Shift': 1,
+    })
+    # Onsite sodium inventory: ~1833 kg/MWt (Creys-Malville scaling, as for LTMR).
+    params['Onsite Coolant Inventory'] = 1833 * params['Power MWt']
+    params['Replacement Coolant Inventory'] = 0
+
+    total_refueling_period = (params['Fuel Lifetime'] + params['Refueling Period']
+                              + params['Startup Duration after Refueling'])
+    total_refueling_period_yr = total_refueling_period / 365
+    params['A75: Vessel Replacement Period (cycles)'] = np.floor(10 / total_refueling_period_yr)
+    params['A75: Core Barrel Replacement Period (cycles)'] = np.floor(10 / total_refueling_period_yr)
+    params['A75: Reflector Replacement Period (cycles)'] = np.floor(10 / total_refueling_period_yr)
+    params['A75: Drum Replacement Period (cycles)'] = np.floor(10 / total_refueling_period_yr)
+    params['Maintenance to Direct Cost Ratio'] = 0.015
+    params['A78: CAPEX to Decommissioning Cost Ratio'] = 0.15
+
+    # Sec 10: Buildings & Economic params (SRE-scale plant; mirrors LTMR layout)
+    params.update({
+        'Land Area': 18,
+        'Excavation Volume': 412.605,
+        'Reactor Building Slab Roof Volume': (9750 * 6502.4 * 1500) / 1e9,
+        'Reactor Building Basement Volume': (9750 * 6502.4 * 1500) / 1e9,
+        'Reactor Building Exterior Walls Volume': ((2 * 9750 * 3500 * 1500) + (3502.4 * 3500 * (1500 + 750))) / 1e9,
+        'Reactor Building Superstructure Area': ((2 * 3500 * 3500) + (2 * 7500 * 3500)) / 1e6,
+        'Integrated Heat Exchanger Building Slab Roof Volume': 0,
+        'Integrated Heat Exchanger Building Basement Volume': 0,
+        'Integrated Heat Exchanger Building Exterior Walls Volume': 0,
+        'Integrated Heat Exchanger Building Superstructure Area': 0,
+        'Turbine Building Slab Roof Volume': (12192 * 2438 * 200) / 1e9,
+        'Turbine Building Basement Volume': (12192 * 2438 * 200) / 1e9,
+        'Turbine Building Exterior Walls Volume': ((12192 * 2496 * 200) + (2038 * 2496 * 200)) * 2 / 1e9,
+        'Control Building Slab Roof Volume': (12192 * 2438 * 200) / 1e9,
+        'Control Building Basement Volume': (12192 * 2438 * 200) / 1e9,
+        'Control Building Exterior Walls Volume': ((12192 * 2496 * 200) + (2038 * 2496 * 200)) * 2 / 1e9,
+        'Manipulator Building Slab Roof Volume': (4876.8 * 2438.4 * 400) / 1e9,
+        'Manipulator Building Basement Volume': (4876.8 * 2438.4 * 1500) / 1e9,
+        'Manipulator Building Exterior Walls Volume': ((4876.8 * 4445 * 400) + (2038.4 * 4445 * 400 * 2)) / 1e9,
+        'Refueling Building Slab Roof Volume': 0,
+        'Refueling Building Basement Volume': 0,
+        'Refueling Building Exterior Walls Volume': 0,
+        'Spent Fuel Building Slab Roof Volume': 0,
+        'Spent Fuel Building Basement Volume': 0,
+        'Spent Fuel Building Exterior Walls Volume': 0,
+        'Emergency Building Slab Roof Volume': 0,
+        'Emergency Building Basement Volume': 0,
+        'Emergency Building Exterior Walls Volume': 0,
+        'Storage Building Slab Roof Volume': (8400 * 3500 * 400) / 1e9,
+        'Storage Building Basement Volume': (8400 * 3500 * 400) / 1e9,
+        'Storage Building Exterior Walls Volume': ((8400 * 2700 * 400) + (3100 * 2700 * 400 * 2)) / 1e9,
+        'Radwaste Building Slab Roof Volume': 0,
+        'Radwaste Building Basement Volume': 0,
+        'Radwaste Building Exterior Walls Volume': 0,
+        'Annual Return': 0.0475,
+        'NOAK Unit Number': 100,
+        'Escalation Year': ESCALATION_YEAR,
+        'Interest Rate': 0.07,
+        'Discount Rate': 0.07,
+        'Construction Duration': 12,
+        'Debt To Equity Ratio': 1,
+    })
+    # ITC/PTC credits are controlled by the user via the webapp not hardcoded here.
+
+
 def build_params(reactor_type, power_mwt, enrichment, user_overrides,
                  n_rings_per_assembly=None, active_height=None,
                  n_assembly_rings=None, n_core_rings=None):
@@ -1106,7 +1348,17 @@ def build_params(reactor_type, power_mwt, enrichment, user_overrides,
         params['Number of Rings per Core'] = int(n_core_rings)
         params['Active Height'] = float(active_height)
 
-    builders = {'LTMR': _build_ltmr, 'GCMR': _build_gcmr, 'HPMR': _build_hpmr}
+    if reactor_type == 'SRE':
+        # SRE uses a fixed reference core geometry; only the active fuel height
+        # is taken as a user input here. Other geometry (core radius, fuel-rod
+        # count, etc.) defaults inside _build_sre and is override-able via
+        # user_overrides.
+        if active_height is None:
+            raise ValueError("SRE requires active_height.")
+        params['Active Height'] = float(active_height)
+
+    builders = {'LTMR': _build_ltmr, 'GCMR': _build_gcmr, 'HPMR': _build_hpmr,
+                'SRE': _build_sre}
     if reactor_type not in builders:
         implemented = ', '.join(implemented_reactor_types())
         if is_registered(reactor_type) and not get_capabilities(reactor_type).implemented:

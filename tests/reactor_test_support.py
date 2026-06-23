@@ -123,6 +123,7 @@ REACTOR_BUILD_CASES = {
                  n_assembly_rings=6, n_core_rings=5, active_height=192),
     "HPMR": dict(power_mwt=5, enrichment=0.1975,
                  n_assembly_rings=6, n_core_rings=5, active_height=109),
+    "SRE": dict(power_mwt=20, enrichment=0.0278, active_height=180),
 }
 
 

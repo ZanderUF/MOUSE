@@ -18,15 +18,18 @@ from core_design.reactor_registry import (
 
 
 class RegistryStructureTest(unittest.TestCase):
-    def test_three_production_reactors_are_implemented(self):
+    def test_implemented_reactor_set(self):
         self.assertEqual(
-            {"LTMR", "GCMR", "HPMR"}, set(implemented_reactor_types())
+            {"LTMR", "GCMR", "HPMR", "SRE"}, set(implemented_reactor_types())
         )
 
-    def test_sfr_and_sre_catalogued_but_not_implemented(self):
-        for rt in ("SFR", "SRE"):
-            self.assertTrue(is_registered(rt))
-            self.assertFalse(get_capabilities(rt).implemented)
+    def test_sre_is_implemented(self):
+        self.assertTrue(is_registered("SRE"))
+        self.assertTrue(get_capabilities("SRE").implemented)
+
+    def test_sfr_catalogued_but_not_implemented(self):
+        self.assertTrue(is_registered("SFR"))
+        self.assertFalse(get_capabilities("SFR").implemented)
 
     def test_get_capabilities_unknown_raises_with_known_list(self):
         with self.assertRaises(KeyError) as ctx:

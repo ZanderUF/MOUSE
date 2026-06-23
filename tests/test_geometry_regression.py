@@ -125,8 +125,9 @@ class BuildParamsDispatchTest(unittest.TestCase):
         self.build_params = build_params
 
     def test_registered_but_unimplemented_raises_not_implemented(self):
+        # SFR is catalogued in the registry but has no params builder yet.
         with self.assertRaises(NotImplementedError):
-            self.build_params("SFR", 10, 0.15, {})
+            self.build_params("SFR", 10, 0.15, {}, active_height=100)
 
     def test_truly_unknown_type_raises_value_error(self):
         with self.assertRaises(ValueError):

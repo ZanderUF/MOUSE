@@ -215,7 +215,7 @@ REACTOR_CAPABILITIES: Dict[str, ReactorCapabilities] = {
         vessel_architecture=LOOP,
         fuel_form=METALLIC,
         pressurized=False,
-        implemented=False,
+        implemented=True,
         description=(
             "Sodium Reactor Experiment-like concept: graphite-moderated "
             "thermal spectrum, sodium coolant, metallic uranium fuel, control "
