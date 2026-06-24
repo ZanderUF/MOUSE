@@ -1,82 +1,105 @@
 # Copyright 2025, Battelle Energy Alliance, LLC, ALL RIGHTS RESERVED
 
-from reactor_engineering_evaluation.tools import ellipsoid_shell, circle_area, materials_densities
+from core_design.reactor_registry import (
+    is_registered,
+    get_capabilities,
+    CONCENTRIC_RVACS,
+)
+from reactor_engineering_evaluation.vessel_stack import (
+    build_vessel_layers,
+    compute_vessel_stack,
+)
+
+
+# Legacy per-layer output keys, keyed by the vessel-stack layer name. Kept so
+# the cost layer and webapp continue to read the same params they always have.
+_LEGACY_MASS_KEYS = {
+    "inner": "Vessel Mass",
+    "guard": "Guard Vessel Mass",
+    "cooling": "Cooling Vessel Mass",
+    "intake": "Intake Vessel Mass",
+}
+_LEGACY_RADIUS_KEYS = {
+    "guard": "Guard Vessel Radius",
+    "cooling": "Cooling Vessel Radius",
+    "intake": "Intake Vessel Radius",
+}
+
+
+def _resolve_vessel_architecture(params):
+    """Pick (architecture, pressurized) from the reactor capability registry.
+
+    Falls back to the historical behaviour (concentric RVACS stack, with only
+    the GCMR using pressurized full-ellipsoid heads) for any reactor-type string
+    that is not in the registry, so legacy example scripts keep working.
+    """
+    rtype = params.get("reactor type")
+    if rtype and is_registered(rtype):
+        caps = get_capabilities(rtype)
+        return caps.vessel_architecture, caps.pressurized
+    return CONCENTRIC_RVACS, (rtype == "GCMR")
 
 
 # Vessel Calcs
 def vessels_specs(params):
-    # Refers to the Inner Vessel 
-    # For the GCMR: the core barrel
-    vessel_height = (params['Active Height'] 
-                     + 2*params['Axial Reflector Thickness'] 
-                     + params['Vessel Lower Plenum Height'] 
-                     + params['Vessel Upper Plenum Height'] 
-                     + params['Vessel Upper Gas Gap']) # This is the first vessel
-    if params['reactor type'] == "GCMR":
-        # Volume based on CAD model
-        # Has upper and lower head (ellipsoid)
-        vessel_volume = (ellipsoid_shell(params['Vessel Radius'], params['Vessel Radius'], params['Vessel Bottom Depth']) * params['Vessel Thickness']
-                        + (circle_area(params['Vessel Radius'] + params['Vessel Thickness']) - circle_area(params['Vessel Radius'])) * vessel_height)
-    else:
-        vessel_volume = (ellipsoid_shell(params['Vessel Radius'], params['Vessel Radius'], params['Vessel Bottom Depth'])/2)\
-            * params['Vessel Thickness'] + (circle_area(params['Vessel Radius'] + params['Vessel Thickness'])\
-                - circle_area(params['Vessel Radius'])) * vessel_height
-    vessel_mass_kg = vessel_volume * materials_densities(params['Vessel Material'])/1000
+    """Size the reactor vessel system and populate vessel mass/geometry params.
 
-    # Refers to the Outer Vessel
-    # For the GCMR: RPV
-    # For the LTMR: Guard Vessel
-    guard_vessel_radius = params['Vessel Radius'] + params['Vessel Thickness'] + params['Gap Between Vessel And Guard Vessel'] 
-    guard_bottom_depth = params['Vessel Bottom Depth'] + params['Vessel Thickness'] + params['Gap Between Vessel And Guard Vessel']
-    if params['reactor type'] == "GCMR":
-        guard_vessel_volume = (ellipsoid_shell(guard_vessel_radius, guard_vessel_radius, guard_bottom_depth) * params['Guard Vessel Thickness'] 
-                              + (circle_area(guard_vessel_radius + params['Guard Vessel Thickness']) - circle_area(guard_vessel_radius)) * vessel_height)
-    else:
-        guard_vessel_volume = (ellipsoid_shell(guard_vessel_radius, guard_vessel_radius, guard_bottom_depth)/2)*\
-            params['Guard Vessel Thickness'] + (circle_area(guard_vessel_radius + params['Guard Vessel Thickness']) -\
-                circle_area(guard_vessel_radius)) * vessel_height
-    guard_vessel_mass_kg = guard_vessel_volume * materials_densities(params['Guard Vessel Material'])/1000
+    The vessel system is described as an ordered stack of shells chosen by the
+    reactor's ``vessel_architecture`` capability (concentric RVACS / pool /
+    loop) and integrated by the generic vessel-stack walker. For the historical
+    concentric architecture this reproduces the previous four-vessel result
+    exactly, and the same legacy params (``Vessel Mass``, ``Guard Vessel
+    Mass``, ..., ``Total Vessels Mass``, ``RPV Outer Radius`` for the GCMR) are
+    still written.
+    """
+    # Shared cylindrical height for every shell in the stack (unchanged).
+    vessel_height = (
+        params["Active Height"]
+        + 2 * params["Axial Reflector Thickness"]
+        + params["Vessel Lower Plenum Height"]
+        + params["Vessel Upper Plenum Height"]
+        + params["Vessel Upper Gas Gap"]
+    )
 
-    # Refers to the RCCS / Cooling Vessel
-    cooling_vessel_radius = guard_vessel_radius + params['Gap Between Guard Vessel And Cooling Vessel'] # cm
-    cooling_bottom_depth = guard_bottom_depth + params['Guard Vessel Thickness'] +\
-        params['Gap Between Guard Vessel And Cooling Vessel']
-    cooling_vessel_volume = (ellipsoid_shell(cooling_vessel_radius, cooling_vessel_radius, cooling_bottom_depth)/2)*\
-        params['Cooling Vessel Thickness'] + (circle_area(cooling_vessel_radius + params['Cooling Vessel Thickness'])\
-            - circle_area(cooling_vessel_radius)) * vessel_height
-    cooling_vessel_mass = cooling_vessel_volume * materials_densities(params['Cooling Vessel Material'])/1000
-    
-    # Refers to the RCCS Intake Vessel
-    intake_vessel_radius = cooling_vessel_radius + params['Gap Between Cooling Vessel And Intake Vessel']
-    intake_bottom_depth = cooling_bottom_depth + params['Cooling Vessel Thickness'] + params['Gap Between Cooling Vessel And Intake Vessel']
-    intake_vessel_volume = (ellipsoid_shell(intake_vessel_radius, intake_vessel_radius, intake_bottom_depth)/2)\
-        * params['Intake Vessel Thickness'] + (circle_area(intake_vessel_radius + params['Intake Vessel Thickness']) -\
-            circle_area(intake_vessel_radius)) * vessel_height
-        
-    intake_vessel_mass = intake_vessel_volume * materials_densities(params['Intake Vessel Material'])/1000
-    
-    # Includes Inner + Outer Vessel + RCCS + RCCS Intake
-    total_vessel_height = intake_bottom_depth + vessel_height
-    vessels_full_radius = intake_vessel_radius + params['Intake Vessel Thickness']
-    total_vessels_mass = vessel_mass_kg + guard_vessel_mass_kg + cooling_vessel_mass + intake_vessel_mass
-    
-    # NOTE for GCMR:
-    # The Vessels Total Radius and Height are not the true vessel dimensions —
-    # they include the RCCS and the RCCS Intake.
-    # Guard Vessel refers to the RPV.
-    # Vessel refers to the Core Barrel.
-    params['Vessels Total Radius'] = vessels_full_radius 
-    params['Vessel Height'] = vessel_height
-    params['Vessels Total Height'] = total_vessel_height
-    params['Guard Vessel Radius'] = guard_vessel_radius
-    params['Cooling Vessel Radius'] = cooling_vessel_radius
-    params['Intake Vessel Radius'] = intake_vessel_radius
-    params['Vessel Mass'] = vessel_mass_kg
-    params['Guard Vessel Mass'] = guard_vessel_mass_kg
-    params['Cooling Vessel Mass'] = cooling_vessel_mass
-    params['Intake Vessel Mass'] = intake_vessel_mass
-    params['Total Vessels Mass'] = total_vessels_mass
+    architecture, pressurized = _resolve_vessel_architecture(params)
+    layers = build_vessel_layers(params, architecture, pressurized)
+    stack = compute_vessel_stack(layers, vessel_height)
 
-    if params['reactor type'] == 'GCMR':
-        params['RPV Outer Radius'] = (params['Guard Vessel Radius'] + params['Guard Vessel Thickness'])
-        params['RPV Outer Height'] = params['Vessel Height'] + 2*params['Gap Between Vessel And Guard Vessel'] + 2*params['Guard Vessel Thickness'] + 2*params['Vessel Bottom Depth'] + 2*params['Vessel Thickness']
+    # --- Stack-level outputs (architecture-independent) ---
+    params["Vessel Height"] = vessel_height
+    params["Vessels Total Radius"] = stack.outer_radius
+    params["Vessels Total Height"] = stack.total_height
+    params["Total Vessels Mass"] = stack.total_mass
+    # Generic breakdown for any number/kind of layers.
+    params["Vessel Stack"] = [
+        {
+            "name": r.layer.name,
+            "role": r.layer.role,
+            "radius": r.layer.radius,
+            "thickness": r.layer.thickness,
+            "material": r.layer.material,
+            "mass": r.mass,
+        }
+        for r in stack.layers
+    ]
+
+    # --- Legacy named outputs (written when the corresponding layer exists) ---
+    present = {r.layer.name for r in stack.layers}
+    for name, key in _LEGACY_MASS_KEYS.items():
+        if name in present:
+            params[key] = stack.mass_by_name(name)
+    for name, key in _LEGACY_RADIUS_KEYS.items():
+        if name in present:
+            params[key] = stack.by_name(name).layer.radius
+
+    # --- GCMR-style RPV reporting for a pressurized concentric stack ---
+    if pressurized and architecture == CONCENTRIC_RVACS and "guard" in present:
+        guard = stack.by_name("guard").layer
+        params["RPV Outer Radius"] = guard.radius + guard.thickness
+        params["RPV Outer Height"] = (
+            vessel_height
+            + 2 * params["Gap Between Vessel And Guard Vessel"]
+            + 2 * params["Guard Vessel Thickness"]
+            + 2 * params["Vessel Bottom Depth"]
+            + 2 * params["Vessel Thickness"]
+        )

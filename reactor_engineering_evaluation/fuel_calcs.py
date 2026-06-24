@@ -1,6 +1,31 @@
 # Copyright 2025, Battelle Energy Alliance, LLC, ALL RIGHTS RESERVED
 
 import numpy as np
+
+
+def burnup_limited_fuel_lifetime_days(power_mwt, heavy_metal_mass_kg,
+                                      discharge_burnup_mwd_per_kghm):
+    """Full-power days until the fuel reaches its discharge-burnup limit.
+
+        lifetime [days] = burnup [MWd/kgHM] * HM mass [kg] / power [MWt]
+
+    This is the natural fuel-lifetime model for metallic-fuel concepts (e.g. an
+    SRE-like or sodium fast reactor) that have no surrogate burnup-vs-geometry
+    training data: the achievable discharge burnup is supplied as a design input
+    (for unalloyed/low-alloy metallic uranium it is typically swelling-limited).
+    """
+    if power_mwt <= 0:
+        raise ValueError(f"power_mwt must be positive, got {power_mwt}.")
+    if heavy_metal_mass_kg <= 0:
+        raise ValueError(
+            f"heavy_metal_mass_kg must be positive, got {heavy_metal_mass_kg}.")
+    if discharge_burnup_mwd_per_kghm <= 0:
+        raise ValueError(
+            "discharge_burnup_mwd_per_kghm must be positive, got "
+            f"{discharge_burnup_mwd_per_kghm}.")
+    return discharge_burnup_mwd_per_kghm * heavy_metal_mass_kg / power_mwt
+
+
 def fuel_calculations(params):
     
     U_mass = (params['Mass U235'] + params['Mass U238']) / 1000  # mass of uranium only (kg)

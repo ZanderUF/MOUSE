@@ -24,7 +24,9 @@ def materials_densities(material):
 def material_specific_heat(material):
     material_cp = {
         "Helium": 5193,  # J/(kg·K)
-        "NaK": 982.      # J/(kg·K)
+        "NaK": 982.,     # J/(kg·K)
+        "Na": 1270.,     # J/(kg·K) — liquid sodium at ~450 °C (SRE/SFR primary coolant)
+        "sodium": 1270., # alias for Na
     }
     return material_cp[material]  # J/(kg·K)
 
