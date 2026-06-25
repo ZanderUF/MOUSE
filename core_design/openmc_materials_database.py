@@ -3,7 +3,16 @@
 import openmc
 
 def collect_materials_data(params):
-    
+    """Build every supported OpenMC material and return {name: openmc.Material}.
+
+    Each material is constructed in its own try/except, so a missing param key
+    skips that material rather than crashing. Reads 'Enrichment' (U-235 atom
+    fraction), 'Common Temperature' [K], and material-specific keys (U_met_wo,
+    H_Zr_ratio, 'UO2 atom fraction', ...). Every material carries .density
+    [g/cm^3]; hydrides and graphite also carry S(alpha,beta) thermal-scattering
+    tables.
+    """
+
     # **************************************************************************************************************************
     #                                               Sec. 1 : MATERIALS
     # **************************************************************************************************************************

@@ -5,6 +5,15 @@ import pandas as pd
 from cost.sampling import sampler
 
 def non_standard_cost_scale(account, unit_cost, scaling_variable_value, exponent, params):
+    """Apply per-account engineering cost correlations for nonstandard accounts.
+
+    Dispatches on `account` to a tailored multiplier times unit_cost (and X^exponent,
+    where X = scaling_variable_value). Examples: pumps 222.11/12 use
+    [0.2/(1 - Pump Isentropic Efficiency) + 1]; compressor 222.13 uses an ANL/NSE
+    GCMR correlation when Primary Loop Count is present, else a pressure-ratio form;
+    enrichment 253 applies a 1.0/1.15 premium; staffing 711/712/713/81 use FTE
+    multipliers. Returns cost in $ (escalated to Escalation Year).
+    """
     # pumps
     if account == 222.11 or account == 222.12:
         cost_multiplier = (0.2 / (1 - params['Pump Isentropic Efficiency'])) + 1
@@ -54,6 +63,13 @@ def non_standard_cost_scale(account, unit_cost, scaling_variable_value, exponent
 
 
 def scale_redundant_BOP_and_primary_loop(df, params):
+    """Scale redundant/multiple coolant and balance-of-plant loop costs in place.
+
+    Multiplies the FOAK cost column by, respectively: Primary Loop Count for
+    account 222.*, BoP Count for accounts 232.* and 213.1, and Primary Loop
+    Purification for account 226 (each applied only if the param is present).
+    Returns the modified DataFrame; costs are in $ (escalated to Escalation Year).
+    """
     # Scales special cases to handle redundant or multiple coolant/BoP loops
     escalation_year = params['Escalation Year']
     cost_col = f'FOAK Estimated Cost (${escalation_year })'
@@ -73,6 +89,15 @@ def scale_redundant_BOP_and_primary_loop(df, params):
 
 
 def scale_cost(initial_database, params):
+    """Scale each account row to a FOAK estimated cost using its scaling equation.
+
+    Standard rows with X_ref > 0: cost = fixed + unit*X^n / X_ref^(n-1); with
+    X_ref <= 0: cost = fixed + unit*X (linear). If the row has a Scaling Variable
+    key and X == 0, cost = 0. Nonstandard rows defer to non_standard_cost_scale().
+    X = params[Scaling Variable]; n = exponent. With Number of Samples > 1,
+    fixed/unit costs are drawn (Lognormal/Uniform) and n from a Truncated Normal.
+    Writes column 'FOAK Estimated Cost ($<year>)' in $ and returns the DataFrame.
+    """
     scaled_cost = initial_database[['Account', 'Level', 'Account Title', 'FOAK to NOAK Multiplier Type',\
                                     "Fixed Cost Low End", "Fixed Cost High End", "Fixed Cost Distribution",\
                                     "Unit Cost Low End", "Unit Cost High End", "Unit Cost Distribution",\

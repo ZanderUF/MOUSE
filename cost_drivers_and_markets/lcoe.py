@@ -13,7 +13,13 @@ def is_double_digit_excluding_multiples_of_10(val):
 
 
 def energy_cost_levelized( plant_lifetime_years, capital_cost, ann_cost, discount_rate, power_MWe, capacity_factor  ):
-    
+    """
+    Standalone discounted-cash-flow LCOE ($/MWh):
+    LCOE = sum(cost_i / (1+d)^i) / sum(E_i / (1+d)^i), where capital_cost is
+    incurred in year 0, ann_cost in years 1..plant_lifetime_years, and
+    E_i = power_MWe * capacity_factor * 365 * 24 MWh. discount_rate and
+    capacity_factor are fractions; costs in dollars ($).
+    """
     sum_cost = 0 # initialization 
     sum_elec = 0
     

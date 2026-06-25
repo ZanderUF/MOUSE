@@ -8,7 +8,12 @@ import numpy as np
 
 
 def calculate_inflation_multiplier(file_path, base_dollar_year, cost_type, escalation_year):
-    
+    """
+    Inflation factor to escalate a cost from its base dollar year to the
+    escalation year, read from the 'Inflation Adjustment' sheet:
+    multiplier = index(escalation_year) / index(base_dollar_year).
+    Returns 1 when cost_type == 'NA'. Dimensionless multiplier on dollars ($).
+    """
     base_dollar_year = int(base_dollar_year)
     escalation_year  = int(escalation_year)
     
