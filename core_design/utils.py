@@ -14,27 +14,33 @@ import copy
 
 
 def circle_area(r):
+    """Area of a circle: pi*r^2. r in cm, returns cm^2."""
     return (np.pi) * r ** 2
 
 
 def cylinder_volume(r, h):
+    """Volume of a cylinder: pi*r^2*h. r, h in cm, returns cm^3."""
     return circle_area(r) * h
 
 
 def sphere_volume(r):
+    """Volume of a sphere: (4/3)*pi*r^3. r in cm, returns cm^3."""
     return 4 / 3 * np.pi * r ** 3
 
 
 def circle_perimeter(r):
+    """Perimeter of a circle: 2*pi*r. r in cm, returns cm."""
     return 2 * (np.pi) * r
 
 
 def sphere_area(radius):
+    """Surface area of a sphere: 4*pi*r^2. radius in cm, returns cm^2."""
     area = 4 * np.pi * (radius ** 2)
     return area
 
 
 def cylinder_radial_shell(r, h):
+    """Lateral surface area of a cylinder: 2*pi*r*h. r, h in cm, returns cm^2."""
     # Calculates the lateral surface area of a cylinder
     return circle_perimeter(r) * h
 
@@ -79,6 +85,10 @@ def calculate_core_radius_from_hex(params):
 
 
 def calculate_heat_flux(params):
+    """
+    Pin-surface heat flux: q = Power MWt / (2*pi*Fuel Pin Radii[-1]*Active Height
+    *Fuel Pin Count * 1e-4), where 1e-4 converts cm^2 -> m^2. Returns MW/m^2.
+    """
     fuel_number = params['Fuel Pin Count']
     heat_transfer_surface = cylinder_radial_shell(
         params['Fuel Pin Radii'][-1],
@@ -89,6 +99,10 @@ def calculate_heat_flux(params):
 
 
 def calculate_pins_in_assembly(params, pin_type):
+    """
+    Count occurrences of pin_type label in the outermost 'Number of Rings per
+    Assembly' rows of 'Pins Arrangement'. Returns a dimensionless count.
+    """
     # Get the ring configuration from the parameters
     rings = params['Pins Arrangement']
     # Keep only the last 'Number of Rings per Assembly' rings as specified in the parameters
@@ -97,6 +111,7 @@ def calculate_pins_in_assembly(params, pin_type):
 
 
 def create_cells(regions: dict, materials: list) -> dict:
+    """Build a dict of OpenMC cells by pairing each named region with its material."""
     return {
         key: openmc.Cell(name=key, fill=mat, region=value)
         for (key, value), mat in zip(regions.items(), materials)
@@ -104,6 +119,11 @@ def create_cells(regions: dict, materials: list) -> dict:
 
 
 def calculate_number_of_rings(rings_over_one_edge):
+    """
+    Total lattice positions for a hex grid with r = rings_over_one_edge rings:
+    the centered-hexagonal number 3*r^2 - 3*r + 1 (r=1->1, 2->7, 3->19, 4->37).
+    Dimensionless count.
+    """
     # Total number of positions given the number of rings along one edge
     return 2 * rings_over_one_edge * (rings_over_one_edge - 1) + \
         2 * sum(range(1, rings_over_one_edge - 1)) + \
@@ -111,18 +131,34 @@ def calculate_number_of_rings(rings_over_one_edge):
 
 
 def calculate_number_fuel_elements_hpmr(rings_over_one_edge):
+    """
+    Fuel-pin count for an HPMR assembly: total_rings(r) - total_rings(ceil(r/2)),
+    where r = rings_over_one_edge. Inner rings hold fuel; the outer ~half hold
+    heat pipes. Dimensionless count.
+    """
     total_number_of_rings = calculate_number_of_rings(rings_over_one_edge)
     number_of_heatpipe_pins = calculate_number_of_rings(int(np.ceil(rings_over_one_edge / 2)))
     return total_number_of_rings - number_of_heatpipe_pins
 
 
 def number_of_heatpipes_hmpr(params):
+    """
+    Write heat-pipe counts into params: 'Number of Heatpipes per Assembly'
+    (total lattice positions minus fuel pins) and 'Number of Heatpipes' (per
+    assembly times assembly count). Dimensionless counts.
+    """
     tot_rings_per_assembly = calculate_number_of_rings(params['Number of Rings per Assembly'])
     params['Number of Heatpipes per Assembly'] = tot_rings_per_assembly - params['Fuel Pin Count per Assembly']
     params['Number of Heatpipes'] = params['Number of Heatpipes per Assembly'] * params['Fuel Assemblies Count']
 
 
 def calculate_total_number_of_TRISO_particles(params):
+    """
+    Count TRISO particles. N_per_compact = floor(Packing Fraction * V_compact /
+    V_particle), with V_compact = pi*Compact Fuel Radius^2*Active Height and
+    V_particle = (4/3)*pi*Fuel Pin Radii[-1]^3 (cm^3). Writes per-compact and
+    total counts into params and returns the total. Dimensionless counts.
+    """
     compact_fuel_vol = cylinder_volume(params['Compact Fuel Radius'], params['Active Height'])
     one_particle_volume = sphere_volume(params['Fuel Pin Radii'][-1])
     number_of_particles_per_compact_fuel_vol = np.floor(
@@ -137,6 +173,10 @@ def calculate_total_number_of_TRISO_particles(params):
 
 
 def calculate_heat_flux_TRISO(params):
+    """
+    TRISO-surface heat flux: q = Power MWt / (N_TRISO * 4*pi*Fuel Pin Radii[0]^2
+    * 1e-4), where 1e-4 converts cm^2 -> m^2. Returns MW/m^2.
+    """
     number_of_triso_particles = calculate_total_number_of_TRISO_particles(params)
     total_area_triso = number_of_triso_particles * sphere_area(params['Fuel Pin Radii'][0]) * 1e-4  # cm^2 to m^2
     heat_flux = params['Power MWt'] / total_area_triso
@@ -264,7 +304,11 @@ def create_universe_plot(materials_database, universe, plot_width, num_pixels, f
 
 
 def openmc_depletion(params, lattice_geometry, settings):
-
+    """
+    Run an OpenMC depletion calculation and write keff (2D and 3D-corrected),
+    depletion time steps, and leakage metrics into params. Returns fuel lifetime
+    [days], U235 and U238 masses [g], and the peaking-factor summary.
+    """
     openmc.config['cross_sections'] = params['cross_sections_xml_location']
 
     operator = openmc.deplete.CoupledOperator(
@@ -353,6 +397,10 @@ def openmc_depletion(params, lattice_geometry, settings):
 
 
 def run_depletion_analysis(params):
+    """
+    Run OpenMC then deplete, writing 'Fuel Lifetime' [days], 'Mass U235'/'Mass
+    U238' [g], and 'Uranium Mass' [kg] = (U235+U238)/1000 into params.
+    """
     openmc.run()
     lattice_geometry = openmc.Geometry.from_xml()
     settings = openmc.Settings.from_xml()
@@ -366,6 +414,7 @@ def run_depletion_analysis(params):
 
 
 def monitor_heat_flux(params):
+    """Print a pass/fail message warning if 'Heat Flux' exceeds 'Heat Flux Criteria' [MW/m^2]."""
     if params['Heat Flux'] <= params['Heat Flux Criteria']:
         print("\n")
         print(f"\033[92mHeat flux: {np.round(params['Heat Flux'], 2)} MW/m^2.\033[0m")
@@ -417,7 +466,11 @@ def _run_isothermal_temperature_coefficients(build_openmc_model, params):
 
 
 def run_openmc(build_openmc_model, heat_flux_monitor, params):
-
+    """
+    Drive the OpenMC workflow (ARO plus optional shutdown-margin and isothermal
+    temperature-coefficient cases). Writes ARO/ARI keff, shutdown margins
+    (SDM = (1-k)/k*1e5 [pcm]), and temperature coefficients into params.
+    """
     params.setdefault('Shutdown Margin Calc', False)
     params.setdefault('Isothermal Temperature Coefficients', False)
     params.setdefault('Cold Shutdown Temperature', 300)
@@ -507,8 +560,10 @@ def run_openmc(build_openmc_model, heat_flux_monitor, params):
 
 
 def cyclic_rotation(input_array, k):
+    """Return input_array cyclically rotated right by k positions."""
     return input_array[-k:] + input_array[:-k]
 
 
 def flatten_list(nested_list):
+    """Flatten one level of nesting in a list of lists into a single flat list."""
     return [item for sublist in nested_list for item in sublist]

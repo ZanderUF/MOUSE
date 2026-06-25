@@ -12,10 +12,20 @@ from core_design.utils import (
 
 
 def _get_valid_ltmr_drum_counts():
+    """
+    Return the allowed LTMR control-drum counts [6, 12, 18, 24, 30, 36].
+    Each value divides evenly across the 6 hexagonal core faces.
+    """
     return [6, 12, 18, 24, 30, 36]
 
 
 def _get_ltmr_drum_layout_quantities(params, drum_radius):
+    """
+    Derive the LTMR drum-layout geometry for a given drum radius [cm].
+    drums_per_side = Number of Drums / 6; drum_tube_radius = drum_radius*(1 + 1/90).
+    Returns (drums_per_side, hex_edge_length, apothem, drum_tube_radius, side_length),
+    with lengths in cm.
+    """
     number_of_drums = params['Number of Drums']
     valid_drum_counts = _get_valid_ltmr_drum_counts()
     if number_of_drums not in valid_drum_counts:
@@ -32,6 +42,12 @@ def _get_ltmr_drum_layout_quantities(params, drum_radius):
 
 
 def _ltmr_drum_positions_for_radius(params, drum_radius):
+    """
+    Compute each drum's (x, y, angle) on the 6 hexagonal core faces for a given
+    drum radius [cm]. Face k has angle theta_k = k*pi/3, and its center sits at
+    radial distance apothem + drum_tube_radius [cm] from the core center.
+    Returns (positions, drum_tube_radius, side_length); x, y in cm, angle in degrees.
+    """
     drums_per_side, _, apothem, drum_tube_radius, side_length = _get_ltmr_drum_layout_quantities(params, drum_radius)
 
     face_angles = [k * np.pi / 3 for k in range(6)]
@@ -55,6 +71,11 @@ def _ltmr_drum_positions_for_radius(params, drum_radius):
 
 
 def _ltmr_drum_radius_is_feasible(params, drum_radius):
+    """
+    Test whether the given LTMR drum radius [cm] places drums without overlap.
+    Returns True only if the along-face spacing >= 2*drum_tube_radius and every
+    pairwise center distance >= 2*drum_tube_radius [cm]; otherwise False.
+    """
     positions, drum_tube_radius, side_length = _ltmr_drum_positions_for_radius(params, drum_radius)
     drums_per_side = params['Number of Drums'] // 6
 
@@ -75,6 +96,11 @@ def _ltmr_drum_radius_is_feasible(params, drum_radius):
 
 
 def _calculate_max_ltmr_drum_radius(params, tol=1e-6, max_iter=100):
+    """
+    Return the maximum feasible LTMR drum radius [cm] via bisection on
+    _ltmr_drum_radius_is_feasible. The search starts from upper_bound =
+    (side_length / (2*drums_per_side)) * 90/91 [cm] and converges to within tol [cm].
+    """
     number_of_drums = params['Number of Drums']
     valid_drum_counts = _get_valid_ltmr_drum_counts()
     if number_of_drums not in valid_drum_counts:
@@ -163,6 +189,16 @@ def _resolve_drum_radius(params):
 
 
 def calculate_drums_volumes_and_masses(params):
+    """
+    Compute control-drum geometry and masses and store them in params [cm, kg].
+    With r=Drum Radius, t=Drum Absorber Thickness, h=Drum Height, N=Drum Count:
+    V_drum = pi*r^2*h; V_absorber = pi*(r^2-(r-t)^2)*h/3 (full annulus) or, if
+    'coating_angle' [deg] given, [pi*r^2 - (pi/180)*angle*(r-t)^2]*h/3;
+    V_reflector = V_drum - V_absorber [cm^3]. All Drums Volume = V_drum*N [cm^3];
+    All Drums Area = All Drums Volume/h [cm^2]; masses = V*N*rho/1000 [kg] with rho
+    [g/cm^3] from the materials database. For GCMR/HPMR also auto-derives Radial/Axial
+    Reflector Thickness, Core Radius, and Drum Height. Mutates params.
+    """
     drum_radius = _resolve_drum_radius(params)
     absorber_thickness = params['Drum Absorber Thickness']
 
@@ -331,6 +367,13 @@ def hexagonal_area_from_ftf(ftf_distance):
 
 
 def calculate_reflector_mass_LTMR(params):
+    """
+    Compute LTMR radial and axial reflector masses and store them in params [kg].
+    Radial area = pi*Core Radius^2 - hex assembly area - All Drums Area [cm^2];
+    radial mass = area*Drum Height*rho/1000 [kg]. Axial mass =
+    cylinder_volume(Core Radius, Axial Reflector Thickness)*rho/1000 [kg], with rho
+    [g/cm^3] from the materials database. Mutates params.
+    """
     _resolve_drum_radius(params)
 
     hex_area = hexagonal_area_from_ftf(params['Assembly FTF'])
@@ -355,6 +398,13 @@ def calculate_reflector_mass_LTMR(params):
 
 
 def calculate_reflector_mass_GCMR(params):
+    """
+    Compute GCMR radial and axial reflector masses and store them in params [kg].
+    Radial volume = Active Height*(circle_area(Core Radius) - N_assemblies*hex_area
+    - All Drums Area) [cm^3]; radial mass = volume*rho/1000 [kg]. Axial mass =
+    2*cylinder_volume(Core Radius, Axial Reflector Thickness)*rho/1000 [kg], with
+    rho [g/cm^3] from the materials database. Mutates params.
+    """
     materials_database = collect_materials_data(params)
     tot_number_assemblies = calculate_number_of_rings(params['Core Rings'])
     reflector_height = params['Active Height']
@@ -374,6 +424,13 @@ def calculate_reflector_mass_GCMR(params):
 
 
 def calculate_moderator_mass_GCMR(params):
+    """
+    Compute GCMR graphite moderator and booster-pin masses and store them in params [kg].
+    Per-assembly moderator area = hex area - fuel-compact area - coolant-channel area
+    - booster footprint [cm^2]; moderator mass = (sum over assemblies of area)
+    *Active Height*rho/1000 [kg]. Booster mass is summed over the annular booster
+    shells, with rho [g/cm^3] from the materials database. Mutates params.
+    """
     materials_database = collect_materials_data(params)
     AR = params['Assembly Rings']
     CR = params['Core Rings']
@@ -444,6 +501,13 @@ def calculate_moderator_mass_GCMR(params):
 
 
 def calculate_reflector_and_moderator_mass_HPMR(params):
+    """
+    Compute HPMR radial/axial reflector and moderator masses and store them in params [kg].
+    The big-hex area comes from the scaled assembly geometry [cm^2]. Radial reflector
+    mass = (circle_area(Core Radius) - big_hex_area)*Active Height*rho/1000 [kg];
+    moderator mass = (big_hex_area - fuel area - heatpipe area)*Active Height*rho/1000
+    [kg], with rho [g/cm^3] from the materials database. Mutates params.
+    """
     materials_database = collect_materials_data(params)
     assembly_long_diag = 1.1547 * params['Assembly FTF']
     assembly_side_length = params['Assembly FTF'] / np.sqrt(3)
@@ -475,6 +539,14 @@ def calculate_reflector_and_moderator_mass_HPMR(params):
 
 
 def calculate_reflector_and_moderator_mass_HPMR_vtb(params):
+    """
+    HPMR (VTB variant) reflector and moderator masses, stored in params [kg].
+    The big-hex area comes from the scaled assembly geometry [cm^2]. Radial reflector
+    mass = (circle_area(Core Radius) - big_hex_area)*Active Height*rho/1000 [kg];
+    moderator mass = (big_hex_area - fuel area - heatpipe area - booster area
+    - drum area)*Active Height*rho/1000 [kg], with rho [g/cm^3] from the materials
+    database. Mutates params.
+    """
     materials_database = collect_materials_data(params)
     assembly_long_diag = 1.1547 * params['Assembly FTF']
     assembly_side_length = params['Assembly FTF'] / np.sqrt(3)
@@ -515,6 +587,11 @@ def calculate_reflector_and_moderator_mass_HPMR_vtb(params):
 
 
 def calculate_moderator_mass(params):
+    """
+    Compute and return the moderator-pin mass [kg].
+    mass = Moderator Pin Count * pi*r^2 * Active Height * rho/1000, where r is the
+    moderator pin radius [cm] and rho [g/cm^3] is from the materials database.
+    """
     # For the moderator pins
     materials_database = collect_materials_data(params)
     moderator_volume = params['Moderator Pin Count'] * circle_area(params['Moderator Pin Radii'][0]) * params['Active Height']

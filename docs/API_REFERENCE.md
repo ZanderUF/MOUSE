@@ -58,6 +58,7 @@ mass [kg] = volume [cm^3] * density [g/cm^3] / 1000
 12. [Parameter Builders](#12-parameter-builders)
 13. [Estimate Service](#13-estimate-service)
 14. [Cost Pipeline](#14-cost-pipeline)
+15. [OpenMC Geometry Templates](#15-openmc-geometry-templates)
 - [Appendix A: Units Glossary](#appendix-a-units-glossary)
 - [Appendix B: Key Constants](#appendix-b-key-physical--calibration-constants)
 
@@ -642,6 +643,98 @@ DCF to one account → its LCOE contribution [$/MWh]; `cost_drivers_estimate`
 enriches the table with `FOAK/NOAK LCOE` columns and optional bar charts.
 `cost_drivers_and_markets/lcoe.py :: energy_cost_levelized(...)` is the standalone
 (no tax-credit) DCF LCOE used by legacy analyses.
+
+---
+
+## 15. OpenMC Geometry Templates
+
+`core_design/openmc_template_{LTMR,GCMR,HPMR}.py`,
+`openmc_template__HPMR_vtb.py`, `pins_arrangement.py` — build the OpenMC
+neutronics model (geometry, materials, tallies, settings) for each reactor.
+**These require OpenMC installed** (unlike the params/cost path). Each
+`build_openmc_model_*(params)` writes `materials.xml`, `geometry.xml`,
+`tallies.xml`, `settings.xml`. Lengths in **cm**, angles in **degrees**.
+
+**Geometry hierarchy** (all hex-based): pin cells → hex lattice (rings per
+assembly) → assemblies → hex lattice (core rings) → radial reflector + control
+drums → outer boundary (vacuum); axially: bottom reflector | active height | top
+reflector.
+
+### `build_openmc_model_LTMR(params)` *(openmc_template_LTMR.py:433)*
+Cylindrical fuel/moderator pins in hex assemblies; drums on the 6 hex faces.
+- **Reads:** `Fuel Pin Radii` [cm] (cumulative: insert, gap, fuel meat, gap,
+  clad), `Moderator Pin Radii` [cm], `Pin Gap Distance` [cm], `Pins Arrangement`,
+  `Number of Rings per Assembly`, `Number of Drums` (6/12/…/36), `Drum Radius`
+  [cm] (auto-max if absent), `Drum Absorber Thickness` [cm], `Drum Absorber Arc
+  Degrees` [deg], `Active Height` [cm], material names, `Common Temperature` [K],
+  `cross_sections_xml_location`; flags `Shutdown Margin Calc`, `Isothermal
+  Temperature Coefficients`, `plotting`.
+- **Key formulas:** pin pitch `= 2·FuelPinRadii[-1] + Pin Gap Distance`; apothem
+  `= Assembly FTF/√3`; drum tube radius `= Drum Radius·(1 + 1/90)`; drum centers
+  at radius `apothem + drum_tube_radius` on each of the 6 face normals.
+
+### `build_openmc_model_GCMR(params)` *(openmc_template_GCMR.py:13)*
+TRISO particles stochastically packed (`openmc.model.pack_spheres`) in compacts;
+6 drums in the outer-ring hex cells.
+- **Reads:** `Fuel Pin Radii` [cm] (TRISO shells: kernel, buffer, PyC, SiC, PyC),
+  `Compact Fuel Radius` [cm], `Packing Fraction` (–), `Matrix Material`,
+  `Lattice Pitch` [cm], `Assembly Rings`, `Core Rings`, `Coolant Channel Radius`
+  [cm], `Moderator Booster Radii` [cm], `Drum Radius`/`Drum Absorber Thickness`
+  [cm], `Active Height` [cm], …
+- **Key formulas:** hex lattice radius `= Lattice Pitch/√3`; absorber arc 120°
+  (plane coefficient `1/√3`); fuel-kernel volume `(4/3)·π·FuelPinRadii[0]³`.
+
+### `build_openmc_model_HPMR(params)` *(openmc_template_HPMR.py:400)*
+Fuel pins + heat pipes alternating in hex assemblies; drums on a placement ring.
+- **Reads:** `Fuel Pin Radii` / `Heat Pipe Radii` [cm], `Lattice Pitch` [cm],
+  `Number of Rings per Assembly` / `per Core`, `Assembly FTF` [cm], `hexagonal
+  Core Edge Length` [cm], `Drum Count` (6/12/18/24), `Drum Radius`/`Drum Absorber
+  Thickness` [cm], `Active Height` [cm], …
+- **Key formulas:** drum ring radius `= (N_core_rings−1)·FTF + FTF/2 +
+  drum_tube_radius`; angular spacing `360°/Drum Count`; absorber snapped to the
+  nearest hex-face normal (nearest 60°), +180° in shutdown-margin mode.
+
+### `update_ltmr_reflector_geometry_from_drums(params)` *(openmc_template_LTMR.py)*
+Derive `Core Radius`, `Radial Reflector Thickness`, `Axial Reflector Thickness`
+[cm] from the drum layout (drums drive reflector size). Called by the LTMR param
+builder before the drum-mass calculation.
+
+### Energy groups (all templates)
+Shared **11-group** MGXS structure [eV] (LTMR:626, GCMR:440, HPMR:511):
+```
+[1e-5, 6.7e-2, 3.2e-1, 1, 4, 9.88, 4.81e1, 4.54e2, 4.9e4, 1.83e5, 8.21e5, 4e7]
+```
+Thermal-optimized (HPMR report, table 5); a fast-spectrum concept would need a
+different group structure.
+
+### Control drum construction & placement
+| Template | Count | Placement | Absorber arc | Clearance gap |
+|---|---|---|---|---|
+| LTMR | 6–36 | 6 hex faces, N/6 per face | parametric [deg] (two cut planes) | r/90 |
+| GCMR | 6 | outer-ring hex cells (60° symmetry) | 120° (`1/√3`) | r/45 |
+| HPMR | 6–24 | placement ring, snapped to 60° | per-drum plane | r/90 |
+| HPMR-vtb | 12 | 6 hex vertices | parametric `coating_angle` | inner/outer shells |
+
+### Tallies
+11-group MGXS (absorption, diffusion coefficient, transport, scatter matrix,
+total) + pin power as **`kappa-fission`**: LTMR/HPMR via `DistribcellFilter` on
+the fuel-meat cell; GCMR via a 20×20 `MeshFilter` + `MaterialFilter` on the
+kernel.
+
+### `pins_arrangement.py :: LTMR_pins_arrangement`
+A nested list — one inner list per hex ring, each `[...] * 6` for the six
+sectors — of `'FUEL'`/`'MODERATOR'` placeholders defining the LTMR pin layout.
+The builder takes the outer `Number of Rings per Assembly` rings and maps
+`'FUEL'`→fuel-pin universe, `'MODERATOR'`→moderator-pin universe for
+`openmc.HexLattice`. (No `'CONTROL_ROD'` placeholder — rod-controlled concepts
+would add one.)
+
+### `openmc_template__HPMR_vtb.py :: class OpenMC_HPMR`
+Detailed HPMR test-bed generator. `gen_input(parms, Tdict, rundir, …)` builds a
+parametric model with axially-divided depletable fuel and 12 staggered drums;
+`run_nominal(…)` runs drum orientations 0°/90°/180° (the last with depletion);
+`postproc()` extracts shutdown margin, lifetime (burnup to k=1), peaking factors
+(Fq, Fdh), and linear heat rate to CSV.
 
 ---
 
