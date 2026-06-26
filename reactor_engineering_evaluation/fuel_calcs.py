@@ -28,6 +28,15 @@ def burnup_limited_fuel_lifetime_days(power_mwt, heavy_metal_mass_kg,
 
 def fuel_calculations(params):
     
+    """Front-end enrichment material balance (natural-U feed, tails, separative work).
+
+    With U_mass = (Mass U235 + Mass U238)/1000 [kg] and enrichment E (–):
+      nat_u_consum = U_mass*(E - 0.0025)/(0.0071 - 0.0025)   [kg]  (0.71% feed, 0.25% tails)
+      tail_waste   = nat_u_consum - U_mass                    [kg]
+      value fn f(x) = (1 - 2x)*ln((1-x)/x)
+      SWU = U_mass*f(E) + tail_waste*5.96 - nat_u_consum*4.87   [kg-SWU]
+    Mutates params: writes 'Natural Uranium Mass', 'Fuel Tail Waste Mass' [kg], 'SWU'.
+    """
     U_mass = (params['Mass U235'] + params['Mass U238']) / 1000  # mass of uranium only (kg)
     nat_u_consum = U_mass*(params['Enrichment'] -0.0025)/(0.0071-0.0025)  # kg
     tail_waste = nat_u_consum - U_mass  # kg

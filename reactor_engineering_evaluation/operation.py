@@ -5,6 +5,16 @@ import numpy as np
 def reactor_operation(params):
     
     # Refueling
+    """Convert the fuel/refueling/shutdown schedule into capacity factor and FTEs.
+
+    Mutates params:
+      add_fuel_num = floor(365*Levelization Period / (Refueling Period + Fuel Lifetime))
+      Capacity Factor = 1 - (refuel_days/yr + startup_after_refuel/yr
+                             + startup_after_shutdown/yr) / 365   [dimensionless]
+      Annual Electricity Production = Capacity Factor * Power MWe * 365 * 24   [MWh]
+      FTE = days/yr * Work Hours Per Shift / Hours Per FTE
+    Times in days, Levelization Period in years.
+    """
     # how many times you add the fuel over the entire reactor lifetime
     add_fuel_num = int(np.floor(365*params['Levelization Period']/ 
                                 (params['Refueling Period'] + params['Fuel Lifetime'])))

@@ -18,6 +18,13 @@ from cost.cost_drivers import cost_drivers_estimate
 
 
 def calculate_high_level_accounts_cost(df, target_level, option, FOAK_or_NOAK):
+    """
+    Roll up a parent account's cost as the sum of its children's costs for a
+    given level and account-prefix group (parent cost = sum(children costs)).
+    `option` selects the prefix group: base 1/2, other 3/4/5, finance 6,
+    annual 7/8. Only fills parents at `target_level` whose cost is still NaN.
+    Costs in dollars ($).
+    """
     cost_column = get_estimated_cost_column(df, FOAK_or_NOAK)
 
     if option == "base":
@@ -55,6 +62,12 @@ def calculate_high_level_accounts_cost(df, target_level, option, FOAK_or_NOAK):
 
 
 def update_high_level_costs(scaled_cost, option, sample):
+    """
+    Roll up parent account costs leaf-to-root over levels 4..0 for both FOAK
+    and NOAK, for the prefix group selected by `option` (base 1/2, other 3/4/5,
+    finance 6, annual 7/8). Leaf accounts with no children are set to 0 and
+    reported once (when sample == 0). Costs in dollars ($).
+    """
     df_with_children_accounts = find_children_accounts(scaled_cost)
     no_subaccounts_list = []
 
@@ -250,6 +263,11 @@ def save_params_to_excel_file(excel_file, params):
 
 
 def transform_dataframe(df):
+    """
+    Prepare a cost table for display: drop rows whose numeric cost columns are
+    all zero, and integer-truncate the remaining numeric values (NaN shown as
+    '-'). Costs in dollars ($).
+    """
     numerical_columns = df.select_dtypes(include=[np.number]).columns
     df = df.loc[~(df[numerical_columns] == 0).all(axis=1)]
     for col in numerical_columns:
@@ -260,10 +278,22 @@ def transform_dataframe(df):
 
 
 def learning_rate_multiplier(learning_rate, number_of_units):
+    """
+    Wright's-law cost multiplier from a learning rate and unit count:
+    multiplier = (1 - learning_rate) ^ log2(min(number_of_units, 100)).
+    Learning is capped at the 100th unit. `learning_rate` is a fraction;
+    the returned multiplier is dimensionless and <= 1.
+    """
     return pow(1-learning_rate, np.log2(min(100, number_of_units)))
 
 
 def FOAK_to_NOAK(df, params):
+    """
+    Scale FOAK account costs to NOAK by applying a per-account learning
+    multiplier selected via 'FOAK to NOAK Multiplier Type' (NOAK = FOAK *
+    multiplier). Onsite-learning accounts assume 2 * NOAK Unit Number units.
+    Writes the NOAK cost column. Rates are fractions; costs in dollars ($).
+    """
     # Additional cost scaling based on an assumed learning rate.
     # Learning rate and cost multiplier are based on
     # DOI: 10.1080/00295450.2023.2206779.
@@ -309,6 +339,10 @@ def FOAK_to_NOAK(df, params):
 
 
 def reorder_dataframe(df):
+    """
+    Reorder columns so 'Account' and 'Account Title' come first, preserving
+    the order of all remaining columns.
+    """
     first_columns = ['Account', 'Account Title']
     other_columns = [col for col in df.columns if col not in first_columns]
     new_column_order = first_columns + other_columns
@@ -317,6 +351,13 @@ def reorder_dataframe(df):
 
 
 def bottom_up_cost_estimate(cost_database_filename, params):
+    """
+    Run the full bottom-up cost pipeline for the reactor plant: validate tax
+    credits -> escalate -> remove irrelevant accounts -> reactor operation, then
+    per sample {scale cost -> redundant BoP -> FOAK_to_NOAK -> rollups ->
+    indirect 31/32/75/82 -> decommissioning 78 -> interest 62 -> TCI -> LCOE},
+    and average mean & std across samples. Returns the account cost table ($).
+    """
     # Validate tax credit params early — before any simulation or cost calculation runs.
     # This catches cases where a user accidentally defines both ITC and PTC,
     # which are mutually exclusive under the IRA.
@@ -428,6 +469,12 @@ def bottom_up_cost_estimate_central(cost_database_filename, params):
 
 
 def parametric_studies(cost_database_filename, tracked_params_list):
+    """
+    Run a single bottom-up cost estimate and append the tracked params and
+    summary costs (OCC/TCI/LCOE etc.) as one row to a CSV next to the calling
+    script. `params` is read from the caller's scope. Costs in dollars ($),
+    LCOE in $/MWh.
+    """
     import inspect
 
     # Grab params and the calling script's path from the caller's frame automatically
@@ -458,6 +505,12 @@ def parametric_studies(cost_database_filename, tracked_params_list):
 
 
 def detailed_bottom_up_cost_estimate(cost_database_filename):
+    """
+    Run the plant (and optional central facility) bottom-up cost estimate and
+    write the detailed account table, parameters, and per-account LCOE drivers
+    to an Excel file next to the calling script. `params` is read from the
+    caller's scope. Returns the detailed cost table. Costs in $, LCOE in $/MWh.
+    """
     import inspect
     import os
 

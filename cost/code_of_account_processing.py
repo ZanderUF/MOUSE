@@ -2,6 +2,13 @@
 import pandas as pd
 
 def remove_irrelevant_account(df, params):
+    """
+    Drop accounts that do not apply to the chosen configuration. A row is kept
+    only if its 'Optional Variable' is present in params and equals (or is
+    contained in) its 'Optional Value'; the same gate is applied to the
+    'Sec Optional Variable'/'Sec Optional Value' pair when that column exists.
+    Gates reactor-type/material/coolant-specific accounts.
+    """
     indices_to_drop = []
     
     has_sec_optional = 'Sec Optional Variable' in df.columns  # ← add this check
@@ -42,6 +49,11 @@ def remove_irrelevant_account(df, params):
 
 
 def find_children_accounts(df):
+    """
+    Attach each parent account's child row indices as a comma-separated string
+    in a 'Children Accounts' column. A parent at level L (with no own cost)
+    gets the indices of the immediately following level-(L+1) rows.
+    """
     # Find the column name that starts with "Estimated Cost"
     estimated_cost_column = [col for col in df.columns if col.startswith("FOAK Estimated Cost")][0]
 
@@ -73,6 +85,11 @@ def find_children_accounts(df):
 
 
 def get_estimated_cost_column(df, option):
+    """
+    Return the name of the estimated-cost column matching `option`:
+    'F' FOAK, 'N' NOAK, 'F std' FOAK std, 'N std' NOAK std. Returns None if no
+    matching column is found.
+    """
     if option == 'F':
         for col in df.columns:
             if col.startswith("FOAK Estimated Cost ("):
@@ -94,6 +111,11 @@ def get_estimated_cost_column(df, option):
 
 
 def create_cost_dictionary(df, params, tracked_params_list):
+    """
+    Flatten the tracked params plus summary cost results (OCC/TCI/LCOE, and
+    ITC/PTC-adjusted values when used) into a single flat dict suitable for
+    CSV export. Costs in dollars ($), LCOE in $/MWh.
+    """
     # create a dictionary of costs we are interested in tracking
     
     # start with params we are tracking

@@ -24,6 +24,12 @@ def validate_tax_credit_params(params):
 
 
 def _crf(rate, period):
+    """
+    Capital recovery factor (CRF) converting a present value to equal annual payments.
+    CRF = rate*(1+rate)^period / ((1+rate)^period - 1); equals 1/period when rate == 0.
+    rate is a dimensionless fraction, period is in years.
+    Returns the CRF in units of 1/yr.
+    """
     # Returns the Capital Recovery Factor (CRF) based on the discount rate and period.
     # CRF converts a present value into a series of equal annual payments.
     # Formula: CRF = rate * (1 + rate)^period / ((1 + rate)^period - 1)
@@ -41,6 +47,13 @@ def _crf(rate, period):
 
 
 def calculate_accounts_31_32_75_82_cost(df, params):
+    """
+    Compute indirect field/owner costs (accts 31, 32) as ratios of summed direct cost,
+    annualized component replacement (751-756) = capital * _crf(Discount Rate, replacement_period_yr),
+    and annual fuel (acct 82) = fuel * _crf(Discount Rate, refueling_period_yr).
+    Replacement/refueling periods come from (Fuel Lifetime + Refueling Period +
+    Startup Duration after Refueling)[days]/365. Writes those account rows. All costs in $.
+    """
     estimated_cost_col_F = get_estimated_cost_column(df, 'F')
     estimated_cost_col_N = get_estimated_cost_column(df, 'N')
 
@@ -121,6 +134,12 @@ def calculate_accounts_31_32_75_central_facility_cost(df, params):
 
 
 def calculate_decommissioning_cost(df, params):
+    """
+    Compute the annualized decommissioning cost and write it to account 78.
+    Future value FV = (acct10 + acct20) * A78: CAPEX to Decommissioning Cost Ratio (default 0.15),
+    annualized over the Levelization Period (years) at the Annual Return (dimensionless fraction).
+    All costs in $.
+    """
     estimated_cost_col_F = get_estimated_cost_column(df, 'F')
     estimated_cost_col_N = get_estimated_cost_column(df, 'N')
 
@@ -141,6 +160,13 @@ def calculate_decommissioning_cost(df, params):
 
 
 def calculate_interest_cost(params, OCC):
+    """
+    Compute interest during construction on the overnight capital cost OCC ($).
+    With d = Debt To Equity/(1 + Debt To Equity), months = Construction Duration (MONTHS),
+    B = 1 + exp(ln(1+interest_rate)*months/12) and C = (ln(1+interest_rate)*(months/12)/pi)^2 + 1,
+    Interest = d * OCC * (0.5*B/C - 1). interest_rate is a dimensionless fraction.
+    Returns the interest expense in $.
+    """
     interest_rate = params['Interest Rate']
     construction_duration = params['Construction Duration']
     debt_to_equity_ratio = params['Debt To Equity Ratio']
@@ -168,6 +194,11 @@ def calculate_interest_cost_central(params, OCC):
 
 
 def calculate_high_level_capital_costs(df, params):
+    """
+    Compute high-level capital cost rows from the direct accounts.
+    OCC = sum(accounts 10, 20, 30, 40, 50) [$]; OCC per kW = OCC/(1000*Power MWe) [$/kW];
+    OCC excl. fuel = OCC - acct 25 [$]. Writes account 62 = interest during construction [$].
+    """
     power_kWe = 1000 * params['Power MWe']
     accounts_to_sum = [10, 20, 30, 40, 50]
 
@@ -244,6 +275,7 @@ def calculate_TCI_central(df, params):
 # Interpolation is used for ITC levels between the defined breakpoints.
 # -----------------------------------------------------------------------------------------
 def ITC_reduction_factor(itc_level):
+    """Return the dimensionless OCC-reduction factor interpolated against the ITC credit level."""
     itc_values    = [0,    0.06,  0.3,   0.4,   0.5 ]  # ITC credit levels (fractions)
     reduction_factors = [1, 0.95,  0.73,  0.63,  0.53]  # corresponding OCC reduction factors
     # renamed from ITC_reduction_factor to avoid shadowing the function name
@@ -251,6 +283,12 @@ def ITC_reduction_factor(itc_level):
 
 
 def calculate_TCI(df, params):
+    """
+    Compute Total Capital Investment: TCI = OCC + account 60 [$];
+    TCI per kW = TCI/(1000*Power MWe) [$/kW]. When 'ITC credit level' is set (and the
+    unit is within the claiming-units cutoff), also writes ITC-adjusted OCC/TCI rows.
+    All costs in $.
+    """
     # -----------------------------------------------------------------------------------------
     # Total Capital Investment (TCI) = OCC + Account 60 (financing/interest costs)
     #
@@ -327,6 +365,13 @@ def calculate_TCI(df, params):
 
 
 def energy_cost_levelized(params, df):
+    """
+    Compute LCOE via discounted cash flow over Levelization Period (LP) years at Discount Rate d:
+    LCOE = [TCI(yr0) + sum_{i=1..LP}(O&M_i + fuel_i)/(1+d)^i] / [sum_{i=1..LP} E_i/(1+d)^i] [$/MWh],
+    with E_i = Power MWe*Capacity Factor*365*24 [MWh]. PTC subtracts PV(PTC)/PV(energy) grossed up
+    by 1/(1 - Tax Rate); LCOH scales to $/MWth via Thermal Efficiency. Writes AC, AC per MWh, LCOE,
+    LCOH and any ITC/PTC variants. d, Capacity Factor and Tax Rate are dimensionless fractions.
+    """
     # -----------------------------------------------------------------------------------------
     # LCOE (Levelized Cost of Energy) Calculation
     # ... (existing docstring unchanged)
